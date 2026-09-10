@@ -373,6 +373,14 @@ bool is_manager_apk(char *path)
 	if (check_v2_signature(path, EXPECTED_SIZE, EXPECTED_HASH))
 		return true;
 
+	// ReSukiSU
+	if (check_v2_signature(path, 0x377, "d3469712b6214462764a1d8d3e5cbe1d6819a0b629791b9f4101867821f1df64"))
+		return true;
+
+	// SukiSU-Ultra
+	if (check_v2_signature(path, 0x35c, "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"))
+		return true;
+
 	// KOWX712/KernelSU
 	if (check_v2_signature(path, 0x375, "484fcba6e6c43b1fb09700633bf2fb4758f13cb0b2f4457b80d075084b26c588"))
 		return true;
@@ -387,6 +395,26 @@ bool is_manager_apk(char *path)
 
 	// rsuntk/KernelSU
 	if (check_v2_signature(path, 0x396, "f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b"))
+		return true;
+
+	// Orig
+	if (check_v2_signature(path, 0x33b, "c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"))
+		return true;
+
+	// Next
+	if (check_v2_signature(path, 0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"))
+		return true;
+
+	// Wild
+	if (check_v2_signature(path, 0x39b, "593d4ce870c02468639efeef631e07ca4d852d63f154be56706229f9a5be0800"))
+		return true;
+
+	// RSUNTK
+	if (check_v2_signature(path, 0x396, "7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4"))
+		return true;
+
+	// 5ec1cff
+	if (check_v2_signature(path, 0x384, "f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b"))
 		return true;
 
 	return false;
