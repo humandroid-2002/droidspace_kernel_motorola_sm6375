@@ -1,0 +1,392 @@
+name: DroidSpace Kernel Build - bangkk
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag (vuoto = generato automaticamente)"
+        required: false
+        type: string
+        default: ""
+      base_commit:
+        description: "Base commit per il changelog (vuoto = default)"
+        required: false
+        type: string
+        default: "c63a2b5a1b970f8b9a231ea6a536a14bad15eab2"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bangkk-kernel-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build kernel and publish release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Configure swap space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ca-certificates curl \
+            flex gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libelf-dev libncurses-dev libssl-dev dwarves \
+            python3 unzip zip file
+
+      - name: Checkout kernel
+        uses: actions/checkout@v4
+        with:
+          repository: humandroid-2002/droidspace_kernel_motorola_sm6375
+          ref: lineage-24.0
+          path: android_kernel_motorola_sm6375
+          fetch-depth: 0
+
+      - name: Checkout AnyKernel3
+        uses: actions/checkout@v4
+        with:
+          repository: humandroid-2002/AnyKernel3
+          path: android_kernel_motorola_sm6375/AnyKernel3
+
+      - name: Cache Clang r563880c
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/clang-r563880c
+          key: clang-r563880c-${{ runner.os }}-v1
+
+      - name: Download Clang r563880c
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOLCHAIN="$GITHUB_WORKSPACE/clang-r563880c"
+          ARCHIVE="$RUNNER_TEMP/clang-r563880c.tar.gz"
+
+          mkdir -p "$TOOLCHAIN"
+
+          curl -fL --retry 3 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/heads/android16-qpr2-release/clang-r563880c.tar.gz" \
+            -o "$ARCHIVE"
+
+          tar -xzf "$ARCHIVE" -C "$TOOLCHAIN"
+
+      - name: Verify Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$GITHUB_WORKSPACE/clang-r563880c"
+          test -x "$TOOLCHAIN/bin/clang"
+          "$TOOLCHAIN/bin/clang" --version
+
+      - name: Setup KernelSU - shockwave
+        working-directory: android_kernel_motorola_sm6375
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fLSs --retry 3 \
+            "https://raw.githubusercontent.com/MrShockWAVEog/KernelSU/shockwave/kernel/setup.sh" \
+            | bash -s shockwave
+
+          test -d KernelSU
+          test "$(git -C KernelSU rev-parse --abbrev-ref HEAD)" = "shockwave"
+          test -L drivers/kernelsu
+
+          echo "KernelSU branch: $(git -C KernelSU rev-parse --abbrev-ref HEAD)"
+          echo "KernelSU integration: $(readlink drivers/kernelsu)"
+
+      - name: Apply KernelSU custom patches
+        working-directory: android_kernel_motorola_sm6375/KernelSU
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.MY_FILES_PAT }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Downloading patch from private my-files repo ==="
+          curl -fL --retry 3 \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3.raw" \
+            "https://api.github.com/repos/humandroid-2002/my-files/contents/Patches/ksu-patches.patch?ref=main" \
+            -o /tmp/ksu-patches.patch
+
+          echo "=== Verifying patch file ==="
+          head -5 /tmp/ksu-patches.patch
+          wc -l /tmp/ksu-patches.patch
+
+          echo "=== Applying patch ==="
+          git apply --verbose /tmp/ksu-patches.patch
+
+          echo "=== Verifying patches applied ==="
+          grep -q "get_pkg_from_apk_path" kernel/manager/apk_sign.c || { echo "::error::apk_sign.c not patched"; exit 1; }
+          grep -q "RapliVx" kernel/manager/apk_sign.c || { echo "::error::RapliVx signature missing"; exit 1; }
+          grep -q "ReSukiSU" kernel/manager/apk_sign.c || { echo "::error::ReSukiSU signature missing"; exit 1; }
+          grep -q "__builtin_memcmp" kernel/manager/pkg_observer.c || { echo "::error::pkg_observer.c not patched"; exit 1; }
+          grep -q "manager_exist" kernel/manager/throne_tracker.c || { echo "::error::throne_tracker.c not patched"; exit 1; }
+
+          echo "=== All patches applied successfully ==="
+
+      - name: Extract KernelSU version info
+        id: ksu_meta
+        working-directory: android_kernel_motorola_sm6375
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KSU_MAKEFILE="KernelSU/kernel/Makefile"
+          test -f "$KSU_MAKEFILE"
+
+          KSU_VERSION="$(awk -F':=' '/^KSU_VERSION[[:space:]]*:=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$KSU_MAKEFILE")"
+          KSU_VERSION_TAG="$(awk -F':=' '/^KSU_VERSION_TAG[[:space:]]*:=/{gsub(/[[:space:]]/,"",$2); print $2; exit}' "$KSU_MAKEFILE" | tr -d '"')"
+          KSU_COMMIT="$(git -C KernelSU rev-parse --short HEAD)"
+
+          if [ -z "$KSU_VERSION" ] || [ -z "$KSU_VERSION_TAG" ]; then
+            echo "::error::Unable to parse KSU_VERSION / KSU_VERSION_TAG from $KSU_MAKEFILE"
+            echo "--- Makefile dump (first 10 lines) ---"
+            head -10 "$KSU_MAKEFILE"
+            exit 1
+          fi
+
+          echo "KernelSU version:  $KSU_VERSION"
+          echo "KernelSU tag:      $KSU_VERSION_TAG"
+          echo "KernelSU commit:   $KSU_COMMIT"
+
+          echo "version=$KSU_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version_tag=$KSU_VERSION_TAG" >> "$GITHUB_OUTPUT"
+          echo "commit=$KSU_COMMIT" >> "$GITHUB_OUTPUT"
+
+      - name: Download TWRP image
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -fL --retry 3 \
+            "https://github.com/humandroid-2002/device_motorola_bangkk_twrp/releases/download/twrp-bangkk-34671060599/TWRP-bangkk-boot-34671060599.img" \
+            -o "$RUNNER_TEMP/twrp.img"
+
+          test -s "$RUNNER_TEMP/twrp.img"
+
+          echo "TWRP image downloaded successfully:"
+          ls -lh "$RUNNER_TEMP/twrp.img"
+          sha256sum "$RUNNER_TEMP/twrp.img"
+
+      - name: Prepare AnyKernel3
+        working-directory: android_kernel_motorola_sm6375/AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          touch .build-placeholder
+          chmod +x build.sh place-modules.sh
+
+          echo "AnyKernel3 files:"
+          ls -la
+
+      - name: Patch build.sh to package Image.gz when available
+        working-directory: android_kernel_motorola_sm6375/AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Before patch ==="
+          grep -n 'cp "${OUT}/arch/arm64/boot/Image" Image' build.sh || true
+
+          python3 - <<'PYEOF'
+          import pathlib
+
+          p = pathlib.Path("build.sh")
+          src = p.read_text()
+
+          old_line = 'cp "${OUT}/arch/arm64/boot/Image" Image'
+
+          new_block = '''if [ -f "${OUT}/arch/arm64/boot/Image.gz" ]; then
+            cp "${OUT}/arch/arm64/boot/Image.gz" Image.gz
+            echo "-- Packaged compressed kernel (Image.gz)"
+          else
+            cp "${OUT}/arch/arm64/boot/Image" Image
+            echo "-- Packaged uncompressed kernel (Image)"
+          fi'''
+
+          if old_line not in src:
+              raise SystemExit("ERROR: couldn't find target line in build.sh")
+
+          src = src.replace(old_line, new_block)
+          p.write_text(src)
+          print("build.sh patched successfully.")
+          PYEOF
+
+          echo
+          echo "=== After patch ==="
+          grep -n -A6 'Image.gz' build.sh | head -20
+
+      - name: Build kernel and AnyKernel ZIP
+        working-directory: android_kernel_motorola_sm6375/AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUILD=1 ANYKERNEL=1 ZIPPREFIX=bangkk ./build.sh
+
+          test -s moto-bangkk-anykernel.zip
+
+          echo "Kernel ZIP created:"
+          ls -lh moto-bangkk-anykernel.zip
+          echo "ZIP contents (first 40 entries):"
+          unzip -l moto-bangkk-anykernel.zip | head -40
+
+          echo
+          echo "=== Kernel image inside ZIP ==="
+          unzip -l moto-bangkk-anykernel.zip | grep -E 'Image|kernel' || true
+
+      - name: Generate release metadata
+        id: release_meta
+        shell: bash
+        env:
+          REQUESTED_TAG: ${{ inputs.tag_name }}
+          KSU_VERSION_TAG: ${{ steps.ksu_meta.outputs.version_tag }}
+        run: |
+          set -euo pipefail
+
+          DATE="$(date -u +%d%m%Y)"
+          TAG="$REQUESTED_TAG"
+
+          if [ -z "$TAG" ]; then
+            TAG="DroidSpace_Kernel_${DATE}-bangkk-${GITHUB_RUN_NUMBER}"
+            NAME="DroidSpace Kernel ${DATE} - bangkk (KernelSU ${KSU_VERSION_TAG})"
+          else
+            NAME="DroidSpace Kernel ${TAG} - bangkk (KernelSU ${KSU_VERSION_TAG})"
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Generate DroidSpace commit changelog
+        working-directory: android_kernel_motorola_sm6375
+        shell: bash
+        env:
+          BASE_COMMIT: ${{ inputs.base_commit }}
+        run: |
+          set -euo pipefail
+
+          CHANGELOG="$RUNNER_TEMP/commit-changelog.md"
+
+          if ! git cat-file -e "${BASE_COMMIT}^{commit}"; then
+            echo "::error::Base commit $BASE_COMMIT is missing from the kernel repository."
+            exit 1
+          fi
+
+          if ! git merge-base --is-ancestor "$BASE_COMMIT" HEAD; then
+            echo "::error::The specified LineageOS base commit is not an ancestor of HEAD."
+            echo "Check the branch history before generating the release."
+            exit 1
+          fi
+
+          {
+            echo "The following commits are included after the LineageOS base:"
+            echo
+
+            git log \
+              --no-merges \
+              --reverse \
+              --format='- [`%h`](https://github.com/humandroid-2002/droidspace_kernel_motorola_sm6375/commit/%H) %s' \
+              "${BASE_COMMIT}..HEAD" || true
+          } > "$CHANGELOG"
+
+          if ! grep -q '^- \`' "$CHANGELOG"; then
+            echo "- No additional commits found after the specified base commit." >> "$CHANGELOG"
+          fi
+
+          echo "Generated changelog:"
+          cat "$CHANGELOG"
+
+      - name: Prepare release notes
+        shell: bash
+        env:
+          CHANGELOG_FILE: ${{ runner.temp }}/commit-changelog.md
+          KSU_VERSION: ${{ steps.ksu_meta.outputs.version }}
+          KSU_VERSION_TAG: ${{ steps.ksu_meta.outputs.version_tag }}
+          KSU_COMMIT: ${{ steps.ksu_meta.outputs.commit }}
+        run: |
+          set -euo pipefail
+
+          cat > release-notes.md <<'EOF'
+          ## Credits
+
+          - Thanks to the devoted work from @ravindu644 and various other contributors, you can run Linux containers on your phone!
+          - Special thanks to @LineageOS and all developers who continue to maintain and support this device.
+
+          ## Included commits
+
+          EOF
+
+          cat "$CHANGELOG_FILE" >> release-notes.md
+
+          cat >> release-notes.md <<EOF
+
+          ## Features
+
+          - DroidSpace support (All required features)
+          - KernelSU-Next Driver (${KSU_VERSION} — ${KSU_VERSION_TAG}, commit \`${KSU_COMMIT}\`)
+          - Compatible Manager: KernelSU-Next, ReSukiSu, KowSU, KernelSU
+          - Compatible with AOSP and Stock OS
+          - Fully tested on Stock OS 14/15
+          - Fully tested on AOSP LineageOS 23.2 and 24.0
+
+          ## Installation Instructions — AOSP
+
+          1. \`fastboot boot twrp.img\`
+          2. Advanced → Flash Current TWRP
+          3. Reboot to Recovery
+          4. Run \`adb sideload moto-bangkk-anykernel.zip\`, or copy \`moto-bangkk-anykernel.zip\` to the Download folder and select Install → Download → \`moto-bangkk-anykernel.zip\`.
+          5. Reboot → System
+
+          ## Installation Instructions — StockOS / EROFS
+
+          1. \`fastboot boot twrp.img\`
+          2. Please **wait** for TWRP to enable touch control (**30 seconds**).
+          3. Advanced → Flash Current TWRP
+          4. Reboot to Recovery
+          5. Run \`adb sideload moto-bangkk-anykernel.zip\`, or copy \`moto-bangkk-anykernel.zip\` to the Download folder and select Install → Download → \`moto-bangkk-anykernel.zip\`.
+          6. Reboot → System
+
+          ## Assets
+
+          - \`moto-bangkk-anykernel.zip\` — flashable kernel package
+          - \`twrp.img\` — TWRP boot image
+
+          EOF
+
+          echo "Release notes preview:"
+          head -40 release-notes.md
+
+      - name: Upload kernel artifact (backup)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: moto-bangkk-anykernel
+          path: android_kernel_motorola_sm6375/AnyKernel3/moto-bangkk-anykernel.zip
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: ${{ steps.release_meta.outputs.name }}
+          target_commitish: lineage-24.0
+          make_latest: true
+          generate_release_notes: false
+          body_path: release-notes.md
+          files: |
+            android_kernel_motorola_sm6375/AnyKernel3/moto-bangkk-anykernel.zip
+            ${{ runner.temp }}/twrp.img
