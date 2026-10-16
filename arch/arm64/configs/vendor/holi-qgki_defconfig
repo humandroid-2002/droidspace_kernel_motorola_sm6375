@@ -21,7 +21,7 @@ CONFIG_MEMCG=y
 CONFIG_MEMCG_SWAP=y
 CONFIG_BLK_CGROUP=y
 CONFIG_CGROUP_SCHED=y
-# CONFIG_FAIR_GROUP_SCHED is not set
+CONFIG_FAIR_GROUP_SCHED=y
 CONFIG_UCLAMP_TASK_GROUP=y
 CONFIG_CGROUP_FREEZER=y
 CONFIG_CPUSETS=y
@@ -920,9 +920,7 @@ CONFIG_KSU_SUSFS_SUS_SU=y
 # Copyright (C) 2026 ravindu644 <droidcasts@protonmail.com>
 
 # IPC
-#For kernel requirements at matrix level 7, Kernel config #errors:                                                                                                                                                                          
-#For config CONFIG_SYSVIPC, value = y but required n
-CONFIG_SYSVIPC=n
+CONFIG_SYSVIPC=y
 CONFIG_POSIX_MQUEUE=y
 CONFIG_SYSCTL=y
 
@@ -937,6 +935,7 @@ CONFIG_SECCOMP_FILTER=y
 # Control groups support
 CONFIG_CGROUP_DEVICE=y
 CONFIG_CGROUP_PIDS=y
+CONFIG_CFS_BANDWIDTH=y
 
 # HW Access Support
 CONFIG_DEVTMPFS=y
@@ -955,11 +954,14 @@ CONFIG_FW_LOADER_COMPRESS=y
 # Networking (Docker/NAT support)
 CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
 CONFIG_NET_NS=y
+CONFIG_MACVLAN=y
 CONFIG_BRIDGE_NETFILTER=y
 CONFIG_NETFILTER_ADVANCED=y
 CONFIG_NF_NAT=y
 CONFIG_NF_TABLES=y
 CONFIG_NETFILTER_XT_TARGET_MASQUERADE=y
+CONFIG_IP6_NF_NAT=y
+CONFIG_IP6_NF_TARGET_MASQUERADE=y
 CONFIG_NF_CONNTRACK_NETLINK=y
 CONFIG_NF_NAT_REDIRECT=y
 
